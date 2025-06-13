@@ -132,10 +132,10 @@ where
                             error!("received response for unknown request: {{res.id()}}");
                         }
                     },
-                    Message::Event(evt) => handler.on_event(evt.clone()),
+                    Message::Event(evt) => handler.on_event(evt.clone()).await,
                     Message::Request(req) => {
                         let request_id = req.id.clone();
-                        let res: Response = match handler.on_request(req.clone()) {
+                        let res: Response = match handler.on_request(req.clone()).await {
                             Ok(v) => Response::Ok(RequestResult {
                                 id: request_id,
                                 result: v,
@@ -162,14 +162,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use super::*;
     use crate::codec::json::JsonCodec;
     use crate::transport::channel::channel_transport_pair;
     use serde_json::{Value, json};
 
     struct MyHandler;
+    
+    #[async_trait]
     impl RpcHandler for MyHandler {
-        fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+        async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
             assert_eq!(req.method, "ping");
             Ok(json!("pong"))
         }

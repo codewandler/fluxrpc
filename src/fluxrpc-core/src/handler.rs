@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crate::message::{ErrorBody, Event, Request, StandardErrorCode};
 use serde_json::Value;
 
@@ -17,9 +18,10 @@ impl Into<ErrorBody> for HandlerError {
     }
 }
 
+#[async_trait]
 pub trait RpcHandler: Send + Sync + 'static {
-    fn on_event(&self, evt: Event) {}
-    fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+    async fn on_event(&self, evt: Event) {}
+    async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
         Err(HandlerError::Unimplemented { method: req.method }.into())
     }
 }
