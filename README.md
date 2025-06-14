@@ -4,6 +4,20 @@
 
 ---
 
+**Features**
+
+- [x] transport: direct tokio channel
+- [x] transport: websocket
+- [ ] transport: Unix socket
+- [ ] transport: TCP
+- [ ] transport: UDP
+
+**TODO**
+
+- [ ] session state similar to actix
+
+---
+
 ## Protocol
 
 **Event**
