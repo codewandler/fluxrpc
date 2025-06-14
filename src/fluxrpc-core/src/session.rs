@@ -1,11 +1,13 @@
 use crate::codec::Codec;
-use crate::handler::RpcHandler;
+use crate::handler::{HandlerError};
 use crate::message::{ErrorBody, Event, Message, Request, RequestError, RequestResult, Response};
 use crate::transport::Transport;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
+use async_trait::async_trait;
+use serde_json::Value;
 use tokio::sync::{Mutex, oneshot};
 use tokio::time;
 use tracing::{debug, error};
@@ -27,26 +29,37 @@ impl fmt::Display for RpcSessionError {
 
 impl std::error::Error for RpcSessionError {}
 
-pub struct RpcSession<T, C>
+#[async_trait]
+pub trait RpcSessionHandler: Send + Sync + 'static {
+    async fn on_event(&self, evt: Event) {}
+    async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+        Err(HandlerError::Unimplemented { method: req.method }.into())
+    }
+}
+
+// TODO: state: OPEN, CLOSED
+
+pub struct RpcSession<C, T>
 where
-    T: Transport,
     C: Codec,
+    T: Transport,
 {
     transport: Arc<T>,
     codec: C,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>,
-    handler: Arc<dyn RpcHandler>,
+    handler: Arc<dyn RpcSessionHandler>,
 }
 
-impl<T, C> RpcSession<T, C>
+impl<C, T> RpcSession<C, T>
 where
     T: Transport,
-    C: Codec + Sync + Send + 'static,
+    C: Codec,
 {
-    pub fn new(transport: T, codec: C, handler: Arc<dyn RpcHandler>) -> Self {
+    pub fn new(transport: T, codec: C, handler: Arc<dyn RpcSessionHandler>) -> Self
+    {
         Self {
-            transport: Arc::new(transport),
             codec,
+            transport: Arc::new(transport),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             handler,
         }
@@ -171,7 +184,7 @@ mod tests {
     struct MyHandler;
     
     #[async_trait]
-    impl RpcHandler for MyHandler {
+    impl RpcSessionHandler for MyHandler {
         async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
             assert_eq!(req.method, "ping");
             Ok(json!("pong"))
@@ -182,8 +195,8 @@ mod tests {
     async fn test_request_response() {
         let handler = Arc::new(MyHandler);
         let (a, b) = channel_transport_pair(10);
-        let session_a = RpcSession::new(a, JsonCodec, handler.clone());
-        let session_b = RpcSession::new(b, JsonCodec, handler.clone());
+        let session_a = RpcSession::new(a, JsonCodec::new(), handler.clone());
+        let session_b = RpcSession::new(b, JsonCodec::new(), handler.clone());
 
         session_a.start().await;
         session_b.start().await;
