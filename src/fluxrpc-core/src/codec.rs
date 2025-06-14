@@ -14,9 +14,9 @@ pub mod json {
 
     impl Codec for JsonCodec {
         fn new() -> Self {
-            Self{}
+            Self {}
         }
-        
+
         fn encode<T: Serialize>(&self, value: &T) -> anyhow::Result<Vec<u8>> {
             let json = serde_json::to_vec(value)?;
             Ok(json)

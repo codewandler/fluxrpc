@@ -2,9 +2,9 @@ use crate::handler::{HandlerError, RpcRequestHandler};
 use crate::message::{ErrorBody, Request};
 use crate::schema;
 use async_trait::async_trait;
-use schemars::{json_schema, schema_for, Schema};
+use schemars::{Schema, json_schema, schema_for};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -108,7 +108,7 @@ impl RpcRegistry {
                 "requests": requests
             }
         }))
-            .unwrap()
+        .unwrap()
     }
 }
 
@@ -127,7 +127,6 @@ where
     F: Fn(Req) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Res, Err>> + Send + 'static,
 {
-
     fn schema(&self) -> MethodSchema {
         MethodSchema {
             method: self.method.clone(),

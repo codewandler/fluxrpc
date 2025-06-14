@@ -1,13 +1,13 @@
 use crate::codec::Codec;
-use crate::handler::{HandlerError};
+use crate::handler::HandlerError;
 use crate::message::{ErrorBody, Event, Message, Request, RequestError, RequestResult, Response};
 use crate::transport::Transport;
+use async_trait::async_trait;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
-use async_trait::async_trait;
-use serde_json::Value;
 use tokio::sync::{Mutex, oneshot};
 use tokio::time;
 use tracing::{debug, error};
@@ -55,8 +55,7 @@ where
     T: Transport,
     C: Codec,
 {
-    pub fn new(transport: T, codec: C, handler: Arc<dyn RpcSessionHandler>) -> Self
-    {
+    pub fn new(transport: T, codec: C, handler: Arc<dyn RpcSessionHandler>) -> Self {
         Self {
             codec,
             transport: Arc::new(transport),
@@ -175,14 +174,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use super::*;
     use crate::codec::json::JsonCodec;
     use crate::transport::channel::channel_transport_pair;
+    use async_trait::async_trait;
     use serde_json::{Value, json};
 
     struct MyHandler;
-    
+
     #[async_trait]
     impl RpcSessionHandler for MyHandler {
         async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {

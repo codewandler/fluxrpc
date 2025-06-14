@@ -5,8 +5,8 @@ pub mod client {
     use async_trait::async_trait;
     use ezsockets::{Bytes, Client, Error, Utf8Bytes};
     use std::sync::Arc;
-    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-    use tokio::sync::{oneshot, Mutex};
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+    use tokio::sync::{Mutex, oneshot};
 
     pub struct ClientHandler {
         tx: UnboundedSender<Vec<u8>>,
@@ -46,9 +46,7 @@ pub mod client {
     #[async_trait]
     impl Transport for ClientTransport {
         async fn send(&self, data: &[u8]) -> anyhow::Result<()> {
-            let _ = self
-                .handle
-                .text(Utf8Bytes::try_from(data.clone().to_vec())?)?;
+            let _ = self.handle.text(Utf8Bytes::try_from(data.to_vec())?)?;
             Ok(())
         }
 
@@ -71,7 +69,7 @@ pub mod client {
             },
             config,
         )
-            .await;
+        .await;
 
         // wait until connected
         rx_connected.await?;
@@ -110,8 +108,8 @@ pub mod server {
     };
     use std::net::SocketAddr;
     use std::sync::Arc;
-    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
     use tokio::sync::Mutex;
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
     type SessionID = u16;
     type Session = ezsockets::Session<SessionID, ()>;
@@ -214,9 +212,7 @@ pub mod server {
     #[async_trait]
     impl Transport for ServerSessionTransport {
         async fn send(&self, data: &[u8]) -> anyhow::Result<()> {
-            let _ = self
-                .handle
-                .text(Utf8Bytes::try_from(data.clone().to_vec())?)?;
+            let _ = self.handle.text(Utf8Bytes::try_from(data.to_vec())?)?;
             Ok(())
         }
 
@@ -259,8 +255,8 @@ pub mod server {
 
 #[cfg(test)]
 mod tests {
-    use crate::codec::json::JsonCodec;
     use crate::codec::Codec;
+    use crate::codec::json::JsonCodec;
     use crate::message::{ErrorBody, Request};
     use crate::session::RpcSessionHandler;
     use crate::transport::websocket::client::connect;
@@ -268,10 +264,10 @@ mod tests {
     use async_trait::async_trait;
     use ezsockets::ClientConfig;
     use nanoid::nanoid;
+    use serde_json::Value;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
-    use serde_json::Value;
     use url::Url;
 
     struct TestHandler {}
@@ -280,10 +276,8 @@ mod tests {
     impl RpcSessionHandler for TestHandler {
         async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
             match req.method.as_str() {
-                "ping" => {
-                    Ok(Value::String("pong".to_string()))
-                }
-                _ => RpcSessionHandler::on_request(self, req).await
+                "ping" => Ok(Value::String("pong".to_string())),
+                _ => RpcSessionHandler::on_request(self, req).await,
             }
         }
     }
@@ -315,7 +309,7 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         assert_eq!(response.result, Value::String("pong".to_string()));
     }
 }
