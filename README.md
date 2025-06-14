@@ -15,6 +15,7 @@
 **TODO**
 
 - [ ] session state similar to actix
+- [ ] loadtest
 
 ---
 
