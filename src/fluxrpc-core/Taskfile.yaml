@@ -1,0 +1,17 @@
+# https://taskfile.dev
+
+version: '3'
+
+vars:
+  GREETING: Hello, World!
+
+tasks:
+  release:
+    cmds:
+      - cargo bump minor
+      - export VERSION=cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'
+      - echo $VERSION
+      - git add -A .
+      - |
+        git commit -am "release: ${VERSION}"
+    silent: true
