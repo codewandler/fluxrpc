@@ -8,10 +8,12 @@ vars:
 tasks:
   release:
     cmds:
+      - cargo test
       - cargo fix --allow-dirty
       - cargo fmt
       - |
         cargo bump minor
+        cargo update
         export VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version' | tr -d '\n')
         echo $VERSION
         git add -A .
