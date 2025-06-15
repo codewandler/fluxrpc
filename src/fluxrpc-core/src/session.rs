@@ -1,6 +1,7 @@
 use crate::codec::Codec;
-use crate::handler::HandlerError;
-use crate::message::{ErrorBody, Event, Message, Request, RequestError, RequestResult, Response};
+use crate::message::{
+    ErrorBody, Event, Message, Request, RequestError, RequestResult, Response, StandardErrorCode,
+};
 use crate::transport::Transport;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -28,6 +29,22 @@ impl fmt::Display for RpcSessionError {
 }
 
 impl std::error::Error for RpcSessionError {}
+
+pub enum HandlerError {
+    Unimplemented { method: String },
+}
+
+impl Into<ErrorBody> for HandlerError {
+    fn into(self) -> ErrorBody {
+        match self {
+            Self::Unimplemented { method } => ErrorBody {
+                message: format!("Method [{}] is not implemented", method),
+                code: StandardErrorCode::NotImplemented.into(),
+                data: None,
+            },
+        }
+    }
+}
 
 #[async_trait]
 pub trait RpcSessionHandler: Send + Sync + 'static {

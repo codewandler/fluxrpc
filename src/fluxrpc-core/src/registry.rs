@@ -1,6 +1,6 @@
-use crate::handler::{HandlerError, RpcRequestHandler};
 use crate::message::{ErrorBody, Request};
 use crate::schema;
+use crate::session::{HandlerError, RpcSessionHandler};
 use async_trait::async_trait;
 use schemars::{Schema, json_schema, schema_for};
 use serde::Serialize;
@@ -150,7 +150,7 @@ where
 }
 
 #[async_trait]
-impl RpcRequestHandler for RpcRegistry {
+impl RpcSessionHandler for RpcRegistry {
     async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
         let method = self.methods.get(&req.method);
         match method {
