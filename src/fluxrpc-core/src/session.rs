@@ -31,13 +31,13 @@ impl std::error::Error for RpcSessionError {}
 
 #[async_trait]
 pub trait RpcSessionHandler: Send + Sync + 'static {
+    async fn on_open(&self) {}
+    async fn on_close(&self) {}
     async fn on_event(&self, evt: Event) {}
     async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
         Err(HandlerError::Unimplemented { method: req.method }.into())
     }
 }
-
-// TODO: state: OPEN, CLOSED
 
 pub struct RpcSession<C, T>
 where
@@ -55,16 +55,29 @@ where
     T: Transport,
     C: Codec,
 {
-    pub fn new(transport: T, codec: C, handler: Arc<dyn RpcSessionHandler>) -> Self {
-        Self {
+    pub fn open(
+        transport: T,
+        codec: C,
+        handler: Arc<dyn RpcSessionHandler>
+    ) -> Arc<Self> {
+        let session = Arc::new(Self {
             codec,
             transport: Arc::new(transport),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             handler,
-        }
+        });
+
+        let session_run = session.clone();
+        tokio::spawn(async move {
+            session_run.handler.on_open().await;
+
+            session_run.run().await;
+        });
+
+        session
     }
 
-    pub async fn notify(&mut self, event: &Event) -> anyhow::Result<()> {
+    pub async fn notify(&self, event: &Event) -> anyhow::Result<()> {
         let msg = Message::Event(event.clone());
         let data = self.codec.encode(&msg)?;
         self.transport.send(&data).await
@@ -113,7 +126,7 @@ where
         }
     }
 
-    pub async fn start(&self) {
+    async fn run(&self) {
         let pending = self.pending_requests.clone();
         let codec = self.codec.clone();
         let handler = self.handler.clone();
@@ -194,11 +207,8 @@ mod tests {
     async fn test_request_response() {
         let handler = Arc::new(MyHandler);
         let (a, b) = channel_transport_pair(10);
-        let session_a = RpcSession::new(a, JsonCodec::new(), handler.clone());
-        let session_b = RpcSession::new(b, JsonCodec::new(), handler.clone());
-
-        session_a.start().await;
-        session_b.start().await;
+        let session_a = RpcSession::open(a, JsonCodec::new(), handler.clone());
+        let session_b = RpcSession::open(b, JsonCodec::new(), handler.clone());
 
         let req = Request::new("ping", None);
 

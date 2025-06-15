@@ -87,14 +87,12 @@ pub mod client {
         config: ezsockets::ClientConfig,
         codec: C,
         handler: Arc<dyn RpcSessionHandler>,
-    ) -> anyhow::Result<RpcSession<C, ClientTransport>>
+    ) -> anyhow::Result<Arc<RpcSession<C, ClientTransport>>>
     where
         C: Codec,
     {
         let transport = connect_transport(config).await?;
-        let session = RpcSession::new(transport, codec, handler);
-        session.start().await;
-        Ok(session)
+        Ok(RpcSession::open(transport, codec, handler))
     }
 }
 
@@ -240,10 +238,7 @@ pub mod server {
         // run session per accepted client
         tokio::spawn(async move {
             while let Some(transport) = rx_accept.recv().await {
-                let s = Arc::new(RpcSession::new(transport, codec.clone(), handler.clone()));
-                tokio::spawn(async move {
-                    s.start().await;
-                });
+                RpcSession::open(transport, codec.clone(), handler.clone());
             }
         });
 
