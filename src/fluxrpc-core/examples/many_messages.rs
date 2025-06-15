@@ -51,10 +51,10 @@ pub async fn main() -> anyhow::Result<()> {
     // 2. start client
     let client = start_client(addr).await?;
 
-    let N = 55000;
+    let n = 55000;
     let start_at = Instant::now();
 
-    let futures = (0..N)
+    let futures = (0..n)
         .map(|_| {
             let client = client.clone(); // Clone Arc or handle as needed
             tokio::spawn(async move {
@@ -76,7 +76,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     println!(
         "{} requests per second",
-        N as f64 / start_at.elapsed().as_secs_f64()
+        n as f64 / start_at.elapsed().as_secs_f64()
     );
 
     Ok(())
