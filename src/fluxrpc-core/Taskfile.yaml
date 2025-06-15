@@ -9,7 +9,7 @@ tasks:
   release:
     cmds:
       - cargo bump minor
-      - export VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+      - export VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version' | tr -d '\n')
       - echo $VERSION
       - git add -A .
       - |
