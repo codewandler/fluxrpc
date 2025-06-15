@@ -1,5 +1,4 @@
 use ezsockets::ClientConfig;
-use fluxrpc_core::codec::Codec;
 use fluxrpc_core::codec::json::JsonCodec;
 use fluxrpc_core::{
     ErrorBody, Request, RpcSession, TypedRpcHandler, WebsocketClientTransport, websocket_connect,
@@ -52,7 +51,7 @@ pub async fn main() -> anyhow::Result<()> {
     // 2. start client
     let client = start_client(addr).await?;
 
-    let N = 100_000;
+    let N = 55000;
     let start_at = Instant::now();
 
     let futures = (0..N)

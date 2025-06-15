@@ -250,7 +250,7 @@ pub mod server {
 
 #[cfg(test)]
 mod tests {
-    use crate::codec::Codec;
+
     use crate::codec::json::JsonCodec;
     use crate::message::{ErrorBody, Request};
     use crate::session::RpcSessionHandler;

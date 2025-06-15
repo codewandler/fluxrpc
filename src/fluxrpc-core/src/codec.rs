@@ -1,5 +1,4 @@
 pub trait Codec: Clone + Sync + Send + 'static {
-    fn new() -> Self;
     fn encode<T: serde::Serialize>(&self, value: &T) -> anyhow::Result<Vec<u8>>;
     fn decode<T: serde::de::DeserializeOwned>(&self, data: &[u8]) -> anyhow::Result<T>;
 }
@@ -12,11 +11,13 @@ pub mod json {
     #[derive(Clone)]
     pub struct JsonCodec;
 
-    impl Codec for JsonCodec {
-        fn new() -> Self {
+    impl JsonCodec {
+        pub fn new() -> Self {
             Self {}
         }
+    }
 
+    impl Codec for JsonCodec {
         fn encode<T: Serialize>(&self, value: &T) -> anyhow::Result<Vec<u8>> {
             let json = serde_json::to_vec(value)?;
             Ok(json)
