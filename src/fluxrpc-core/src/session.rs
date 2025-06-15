@@ -55,11 +55,7 @@ where
     T: Transport,
     C: Codec,
 {
-    pub fn open(
-        transport: T,
-        codec: C,
-        handler: Arc<dyn RpcSessionHandler>
-    ) -> Arc<Self> {
+    pub fn open(transport: T, codec: C, handler: Arc<dyn RpcSessionHandler>) -> Arc<Self> {
         let session = Arc::new(Self {
             codec,
             transport: Arc::new(transport),
