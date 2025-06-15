@@ -145,6 +145,18 @@ impl fmt::Display for StandardErrorCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
-    pub event: String,
-    pub data: Option<Value>,
+    event: String,
+    data: Option<Value>,
+}
+
+impl Event {
+    pub fn new<T>(event: &str, data: Option<T>) -> Self
+    where
+        T: Serialize,
+    {
+        Self {
+            event: event.to_string(),
+            data: serde_json::to_value(data).ok(),
+        }
+    }
 }

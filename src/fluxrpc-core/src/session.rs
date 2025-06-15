@@ -101,7 +101,9 @@ where
         request: &Request,
         timeout: Option<Duration>,
     ) -> Result<RequestResult, RpcSessionError> {
-        debug!("Sending request {{request}}");
+        let started_at = time::Instant::now();
+
+        debug!("Sending request {request:?}");
         let msg = Message::Request(request.clone());
         let data = self
             .codec
@@ -129,12 +131,15 @@ where
             None => rx.await,
         };
 
+        let took = started_at.elapsed().as_micros();
+        debug!("Request {request:?} took {took} microseconds");
+
         match result {
             Ok(Response::Ok(r)) => Ok(r),
             Ok(Response::Error(e)) => Err(RpcSessionError::Request(e)),
-            Err(_) => Err(RpcSessionError::Request(RequestError {
+            Err(err) => Err(RpcSessionError::Request(RequestError {
                 id: id.clone(),
-                error: ErrorBody::internal_error("Response channel closed".to_string()),
+                error: ErrorBody::internal_error(err.to_string()),
             })),
         }
     }

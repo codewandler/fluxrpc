@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 pub mod channel;
-mod websocket;
+pub mod websocket;
 
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
