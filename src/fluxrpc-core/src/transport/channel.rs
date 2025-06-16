@@ -1,6 +1,10 @@
+use crate::codec::Codec;
+use crate::session::RpcSessionHandler;
 use crate::transport::{Transport, TransportMessage};
+use crate::{RpcSession, SessionState};
 use anyhow::anyhow;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, mpsc};
 
@@ -41,6 +45,24 @@ pub fn channel_transport_pair(capacity: usize) -> (ChannelTransport, ChannelTran
     let b = ChannelTransport::new(tx2, rx1); // side B
 
     (a, b)
+}
+
+pub fn new_channel_sessions<C, S>(
+    c: C,
+    h: Arc<dyn RpcSessionHandler<State = S>>,
+    s: S,
+) -> (
+    Arc<RpcSession<C, ChannelTransport, S>>,
+    Arc<RpcSession<C, ChannelTransport, S>>,
+)
+where
+    C: Codec,
+    S: SessionState,
+{
+    let (t1, t2) = channel_transport_pair(10);
+    let s1 = RpcSession::create(t1, c.clone(), h.clone(), s.clone());
+    let s2 = RpcSession::create(t2, c, h.clone(), s.clone());
+    (s1, s2)
 }
 
 #[cfg(test)]

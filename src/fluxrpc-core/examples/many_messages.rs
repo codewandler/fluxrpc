@@ -19,9 +19,10 @@ async fn start_server(addr: SocketAddr) {
         println!("OPENED");
         Ok(())
     });
-    handler.register_request_handler("ping", |_: (), _: ()| async move {
-        Result::<(), ErrorBody>::Ok(())
-    });
+    handler.register_request_handler(
+        "ping",
+        |s, _: ()| async move { Result::<(), ErrorBody>::Ok(()) },
+    );
     let _ = websocket_listen(
         addr,
         codec.clone(),
@@ -37,9 +38,10 @@ async fn start_client(
 ) -> anyhow::Result<Arc<RpcSession<JsonCodec, WebsocketClientTransport, ()>>> {
     let codec = JsonCodec::new();
     let mut handler = TypedRpcHandler::new();
-    handler.register_request_handler("ping", |_: (), _: ()| async move {
-        Result::<(), ErrorBody>::Ok(())
-    });
+    handler.register_request_handler(
+        "ping",
+        |s, _: ()| async move { Result::<(), ErrorBody>::Ok(()) },
+    );
     let client_url = Url::parse(format!("ws://{}", addr).as_str())?;
     let client_config = ClientConfig::new(client_url);
     let client = websocket_connect(client_config, codec, Arc::new(handler), ()).await?;

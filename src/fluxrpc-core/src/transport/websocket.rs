@@ -102,7 +102,7 @@ pub mod client {
         S: SessionState,
     {
         let transport = connect_transport(config).await?;
-        Ok(RpcSession::open(transport, codec, handler, state))
+        Ok(RpcSession::create(transport, codec, handler, state))
     }
 }
 
@@ -118,6 +118,7 @@ pub mod server {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+    use tracing::debug;
 
     type SessionID = u16;
     type Session = ezsockets::Session<SessionID, ()>;
@@ -207,7 +208,8 @@ pub mod server {
             id: SessionID,
             reason: Result<Option<CloseFrame>, Error>,
         ) -> Result<(), Error> {
-            todo!()
+            debug!("session {} disconnected: {:?}", id, reason);
+            Ok(())
         }
 
         async fn on_call(&mut self, call: Self::Call) -> Result<(), Error> {
@@ -260,7 +262,7 @@ pub mod server {
         // run session per accepted client
         tokio::spawn(async move {
             while let Some(transport) = rx_accept.recv().await {
-                RpcSession::open(
+                let _ = RpcSession::create(
                     transport,
                     codec.clone(),
                     handler.clone(),
@@ -280,7 +282,7 @@ mod tests {
 
     use crate::codec::json::JsonCodec;
     use crate::message::{ErrorBody, Request};
-    use crate::session::RpcSessionHandler;
+    use crate::session::{RpcSessionHandler, SessionHandle};
     use crate::transport::websocket::client::connect;
     use crate::transport::websocket::server::listen;
     use async_trait::async_trait;
@@ -297,7 +299,11 @@ mod tests {
     #[async_trait]
     impl RpcSessionHandler for TestHandler {
         type State = ();
-        async fn on_request(&self, s: (), req: Request) -> Result<Value, ErrorBody> {
+        async fn on_request(
+            &self,
+            s: Arc<dyn SessionHandle<State = Self::State>>,
+            req: Request,
+        ) -> Result<Value, ErrorBody> {
             match req.method.as_str() {
                 "ping" => Ok(Value::String("pong".to_string())),
                 _ => RpcSessionHandler::on_request(self, s, req).await,
