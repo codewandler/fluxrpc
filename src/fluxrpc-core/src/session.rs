@@ -54,8 +54,12 @@ impl Into<ErrorBody> for HandlerError {
 pub trait RpcSessionHandler: Send + Sync + 'static {
     type State: SessionState;
 
-    async fn on_open(&self, s: Self::State) {}
-    async fn on_close(&self, s: Self::State) {}
+    async fn on_open(&self, s: Self::State) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn on_close(&self, s: Self::State) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn on_data(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()> {
         Ok(())
     }

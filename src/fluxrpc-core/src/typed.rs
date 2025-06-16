@@ -2,7 +2,7 @@ use crate::Event;
 use crate::message::{ErrorBody, Request};
 use crate::session::{HandlerError, RpcSessionHandler, SessionState};
 use async_trait::async_trait;
-use schemars::Schema;
+use schemars::{JsonSchema, Schema};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -39,9 +39,10 @@ trait TypedRpcDispatch: Send + Sync {
 }
 
 #[async_trait]
-trait TypedDataDispatch: Send + Sync {
+trait Callable: Send + Sync {
     type State: SessionState;
-    async fn call(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()>;
+    type Input;
+    async fn call(&self, s: Self::State, data: Self::Input) -> anyhow::Result<()>;
 }
 
 pub struct TypedRpcHandler<S>
@@ -50,8 +51,9 @@ where
 {
     request_handlers: HashMap<String, Arc<dyn TypedRpcMethod<State = S>>>,
     event_handlers: HashMap<String, Arc<dyn TypedRpcDispatch<State = S>>>,
-    data_handler: Option<Arc<dyn TypedDataDispatch<State = S>>>,
-    //events: HashMap<String, EventSchema>,
+    data_handler: Option<Arc<dyn Callable<State = S, Input = Vec<u8>>>>,
+    open_handler: Option<Arc<dyn Callable<State = S, Input = ()>>>,
+    close_handler: Option<Arc<dyn Callable<State = S, Input = ()>>>,
     _state: PhantomData<S>,
 }
 
@@ -64,9 +66,24 @@ where
             request_handlers: HashMap::new(),
             event_handlers: HashMap::new(),
             data_handler: None,
+            open_handler: None,
+            close_handler: None,
             //events: HashMap::new(),
             _state: PhantomData,
         }
+    }
+
+    pub fn with_open_handler<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(S, ()) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
+    {
+        let handler = Arc::new(TypedCallbackHandler::<F, S, ()> {
+            f: Arc::new(f),
+            _phantom: Default::default(),
+        });
+
+        self.open_handler.replace(handler);
     }
 
     pub fn register_event_handler<E, F, Fut>(&mut self, name: &str, f: F)
@@ -89,7 +106,7 @@ where
         F: Fn(S, Vec<u8>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
     {
-        let handler = Arc::new(TypedDataHandler::<F, S> {
+        let handler = Arc::new(TypedCallbackHandler::<F, S, Vec<u8>> {
             f: Arc::new(f),
             _phantom: Default::default(),
         });
@@ -99,8 +116,8 @@ where
 
     pub fn register_request_handler<Req, Res, Err, F, Fut>(&mut self, method: &str, f: F)
     where
-        Req: serde::de::DeserializeOwned + schemars::JsonSchema + Sync + Send + 'static,
-        Res: serde::Serialize + schemars::JsonSchema + Sync + Send + 'static,
+        Req: DeserializeOwned + JsonSchema + Sync + Send + 'static,
+        Res: Serialize + JsonSchema + Sync + Send + 'static,
         Err: Into<ErrorBody> + Sync + Send + 'static,
         F: Fn(S, Req) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Res, Err>> + Send + 'static,
@@ -112,51 +129,6 @@ where
         });
         self.request_handlers.insert(method.to_string(), handler);
     }
-
-    /*pub fn schema(&self) -> schema::Schema {
-        let events: HashMap<_, _> = HashMap::from_iter(self.events.iter().map(|(k, v)| {
-            (
-                k.to_string(),
-                json_schema!({
-                    "properties": {
-                        "event": {
-                            "type": "string",
-                            "const": v.name.clone(),
-                        },
-                        "data": v.schema.clone(),
-                    },
-                    "required": ["event"],
-                }),
-            )
-        }));
-        let requests: HashMap<_, _> =
-            HashMap::from_iter(self.request_handlers.iter().map(|(k, v)| {
-                (
-                    k.to_string(),
-                    json_schema!({
-                        "properties": {
-                            "id": {
-                                "type": "string"
-                            },
-                            "method": {
-                                "type": "string",
-                                "const": k.to_string(),
-                            },
-                            "params": v.schema(),
-                        },
-                        "required": ["id", "method"],
-
-                    }),
-                )
-            }));
-        serde_json::from_value(json!({
-            "components": {
-                "events": events,
-                "requests": requests
-            }
-        }))
-        .unwrap()
-    }*/
 }
 
 struct TypedRequestHandler<Req, Res, Err, F, S> {
@@ -171,21 +143,23 @@ struct TypedEventHandler<E, F, S> {
     _phantom: PhantomData<(E, S)>,
 }
 
-struct TypedDataHandler<F, S> {
+struct TypedCallbackHandler<F, S, I> {
     f: Arc<F>,
-    _phantom: PhantomData<S>,
+    _phantom: PhantomData<(S, I)>,
 }
 
 #[async_trait]
-impl<F, S, Fut> TypedDataDispatch for TypedDataHandler<F, S>
+impl<F, S, I, Fut> Callable for TypedCallbackHandler<F, S, I>
 where
-    F: Fn(S, Vec<u8>) -> Fut + Send + Sync + 'static,
+    F: Fn(S, I) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     S: SessionState,
+    I: Sync + Send + 'static,
 {
     type State = S;
+    type Input = I;
 
-    async fn call(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()> {
+    async fn call(&self, s: Self::State, data: I) -> anyhow::Result<()> {
         _ = (self.f)(s, data).await;
 
         Ok(())
@@ -195,7 +169,7 @@ where
 #[async_trait]
 impl<E, F, S, Fut> TypedRpcDispatch for TypedEventHandler<E, F, S>
 where
-    E: serde::de::DeserializeOwned + schemars::JsonSchema + Sync + Send + 'static,
+    E: DeserializeOwned + JsonSchema + Sync + Send + 'static,
     F: Fn(S, E) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     S: SessionState,
@@ -214,22 +188,14 @@ where
 #[async_trait]
 impl<Req, Res, Err, F, Fut, S> TypedRpcMethod for TypedRequestHandler<Req, Res, Err, F, S>
 where
-    Req: serde::de::DeserializeOwned + schemars::JsonSchema + Sync + Send + 'static,
-    Res: serde::Serialize + schemars::JsonSchema + Sync + Send + 'static,
+    Req: DeserializeOwned + JsonSchema + Sync + Send + 'static,
+    Res: Serialize + JsonSchema + Sync + Send + 'static,
     Err: Into<ErrorBody> + Sync + Send + 'static,
     F: Fn(S, Req) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Res, Err>> + Send + 'static,
     S: SessionState,
 {
     type State = S;
-
-    /*fn schema(&self) -> MethodSchema {
-        MethodSchema {
-            method: self.method.clone(),
-            params: schema_for!(Req),
-            result: schema_for!(Res),
-        }
-    }*/
 
     async fn call(&self, s: S, params: Value) -> Result<Value, ErrorBody> {
         let input: Req = serde_json::from_value(params)
@@ -259,8 +225,12 @@ where
         Ok(())
     }
 
-    // TODO: event handler
-    // TODO: data handler
+    async fn on_open(&self, s: Self::State) -> anyhow::Result<()> {
+        if let Some(handler) = &self.open_handler {
+            handler.call(s, ()).await?;
+        }
+        Ok(())
+    }
 
     async fn on_event(&self, s: Self::State, evt: Event) -> anyhow::Result<()> {
         match self.event_handlers.get(&evt.event) {
@@ -310,6 +280,11 @@ mod tests {
     async fn test_registry() {
         let mut registry = TypedRpcHandler::new();
 
+        registry.with_open_handler(|_: (), _| async move {
+            println!("OPEN!");
+            Ok(())
+        });
+
         registry.register_request_handler::<f32, f32, ErrorBody, _, _>(
             "test",
             |_: (), x: f32| async move { Ok(x * 2.0) },
@@ -328,6 +303,9 @@ mod tests {
             println!("Data: {:?}", data);
             Ok(())
         });
+
+        // 0. open
+        registry.on_open(()).await;
 
         // 1. handle request
         let req = Request::new("test", Value::from(1.0).into());
