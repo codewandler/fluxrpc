@@ -1,11 +1,12 @@
 use crate::message::{ErrorBody, Request};
 use crate::schema;
-use crate::session::{HandlerError, RpcSessionHandler};
+use crate::session::{HandlerError, RpcSessionHandler, SessionState};
 use async_trait::async_trait;
 use schemars::{Schema, json_schema, schema_for};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
@@ -23,30 +24,41 @@ struct EventSchema {
 
 #[async_trait]
 trait TypedRpcMethod: Send + Sync {
+    type State: SessionState;
+
     fn schema(&self) -> MethodSchema;
-    async fn call(&self, params: Value) -> Result<Value, ErrorBody>;
+    async fn call(&self, s: Self::State, params: Value) -> Result<Value, ErrorBody>;
 }
 
-pub struct TypedRpcHandler {
-    request_handlers: HashMap<String, Arc<dyn TypedRpcMethod>>,
+pub struct TypedRpcHandler<S>
+where
+    S: SessionState,
+{
+    request_handlers: HashMap<String, Arc<dyn TypedRpcMethod<State = S>>>,
     events: HashMap<String, EventSchema>,
+    _state: PhantomData<S>,
 }
 
-impl TypedRpcHandler {
+impl<S> TypedRpcHandler<S>
+where
+    S: SessionState,
+{
     pub fn new() -> Self {
         Self {
             request_handlers: HashMap::new(),
             events: HashMap::new(),
+            _state: PhantomData,
         }
     }
 
     pub fn register_event_handler<E, F, Fut>(&mut self, name: &str, f: F)
     where
         E: schemars::JsonSchema + 'static,
-        F: Fn(E) -> Fut + Send + Sync + 'static,
+        F: Fn(S, E) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
     {
         let schema = schema_for!(E);
+        // TODO: store F
         self.events.insert(
             name.to_string(),
             EventSchema {
@@ -61,10 +73,10 @@ impl TypedRpcHandler {
         Req: serde::de::DeserializeOwned + schemars::JsonSchema + Sync + Send + 'static,
         Res: serde::Serialize + schemars::JsonSchema + Sync + Send + 'static,
         Err: Into<ErrorBody> + Sync + Send + 'static,
-        F: Fn(Req) -> Fut + Send + Sync + 'static,
+        F: Fn(S, Req) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Res, Err>> + Send + 'static,
     {
-        let handler = Arc::new(TypedRequestHandler {
+        let handler = Arc::new(TypedRequestHandler::<Req, Res, Err, F, S> {
             f: Arc::new(f),
             method: method.to_string(),
             _phantom: Default::default(),
@@ -118,21 +130,24 @@ impl TypedRpcHandler {
     }
 }
 
-struct TypedRequestHandler<Req, Res, Err, F> {
+struct TypedRequestHandler<Req, Res, Err, F, S> {
     method: String,
     f: Arc<F>,
-    _phantom: std::marker::PhantomData<(Req, Res, Err)>,
+    _phantom: PhantomData<(Req, Res, Err, S)>,
 }
 
 #[async_trait]
-impl<Req, Res, Err, F, Fut> TypedRpcMethod for TypedRequestHandler<Req, Res, Err, F>
+impl<Req, Res, Err, F, Fut, S> TypedRpcMethod for TypedRequestHandler<Req, Res, Err, F, S>
 where
     Req: serde::de::DeserializeOwned + schemars::JsonSchema + Sync + Send + 'static,
     Res: serde::Serialize + schemars::JsonSchema + Sync + Send + 'static,
     Err: Into<ErrorBody> + Sync + Send + 'static,
-    F: Fn(Req) -> Fut + Send + Sync + 'static,
+    F: Fn(S, Req) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Res, Err>> + Send + 'static,
+    S: SessionState,
 {
+    type State = S;
+
     fn schema(&self) -> MethodSchema {
         MethodSchema {
             method: self.method.clone(),
@@ -141,11 +156,11 @@ where
         }
     }
 
-    async fn call(&self, params: Value) -> Result<Value, ErrorBody> {
+    async fn call(&self, s: S, params: Value) -> Result<Value, ErrorBody> {
         let input: Req = serde_json::from_value(params)
             .map_err(|e| ErrorBody::internal_error(format!("Invalid params: {}", e)))?;
 
-        let result = (self.f)(input).await;
+        let result = (self.f)(s, input).await;
 
         match result {
             Ok(output) => serde_json::to_value(output)
@@ -156,11 +171,16 @@ where
 }
 
 #[async_trait]
-impl RpcSessionHandler for TypedRpcHandler {
-    async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+impl<S> RpcSessionHandler for TypedRpcHandler<S>
+where
+    S: SessionState,
+{
+    type State = S;
+
+    async fn on_request(&self, s: S, req: Request) -> Result<Value, ErrorBody> {
         let method = self.request_handlers.get(&req.method);
         match method {
-            Some(handler) => handler.call(req.params.unwrap_or(Value::Null)).await,
+            Some(handler) => handler.call(s, req.params.unwrap_or(Value::Null)).await,
             None => Err(HandlerError::Unimplemented { method: req.method }.into()),
         }
     }
@@ -196,36 +216,39 @@ mod tests {
     async fn test_registry() {
         let mut registry = TypedRpcHandler::new();
 
-        registry
-            .register_request_handler::<f32, f32, ErrorBody, _, _>("test", |x: f32| async move {
-                Ok(x * 2.0)
-            });
+        registry.register_request_handler::<f32, f32, ErrorBody, _, _>(
+            "test",
+            |_: (), x: f32| async move { Ok(x * 2.0) },
+        );
         registry.register_request_handler::<MyRequest, MyResponse, ErrorBody, _, _>(
             "some_request",
-            |_| async move { Ok(MyResponse { status: true }) },
+            |_, _| async move { Ok(MyResponse { status: true }) },
         );
 
-        registry.register_event_handler("my_event", |evt: MyCustomEvent| async move {
+        registry.register_event_handler("my_event", |_, evt: MyCustomEvent| async move {
             println!("Event: {:?}", evt);
             Ok(())
         });
 
         // 1. handle request
         let req = Request::new("test", Value::from(1.0).into());
-        let res = registry.on_request(req).await.unwrap();
+        let res = registry.on_request((), req).await.unwrap();
         assert_eq!(res, Value::from(2.0));
 
         // 2. event
         registry
-            .on_event(Event::new(
-                "my_event",
-                MyCustomEvent {
-                    a: 0,
-                    b: "".to_string(),
-                    c: None,
-                }
-                .into(),
-            ))
+            .on_event(
+                (),
+                Event::new(
+                    "my_event",
+                    MyCustomEvent {
+                        a: 0,
+                        b: "".to_string(),
+                        c: None,
+                    }
+                    .into(),
+                ),
+            )
             .await;
 
         println!(

@@ -1,6 +1,6 @@
 pub mod client {
     use crate::codec::Codec;
-    use crate::session::{RpcSession, RpcSessionHandler};
+    use crate::session::{RpcSession, RpcSessionHandler, SessionState};
     use crate::transport::Transport;
     use async_trait::async_trait;
     use ezsockets::{Bytes, Client, Error, Utf8Bytes};
@@ -83,22 +83,24 @@ pub mod client {
     }
 
     /// Connect to a websocket server and return a started RPC session
-    pub async fn connect<C>(
+    pub async fn connect<C, S>(
         config: ezsockets::ClientConfig,
         codec: C,
-        handler: Arc<dyn RpcSessionHandler>,
-    ) -> anyhow::Result<Arc<RpcSession<C, ClientTransport>>>
+        handler: Arc<dyn RpcSessionHandler<State = S>>,
+        state: S,
+    ) -> anyhow::Result<Arc<RpcSession<C, ClientTransport, S>>>
     where
         C: Codec,
+        S: SessionState,
     {
         let transport = connect_transport(config).await?;
-        Ok(RpcSession::open(transport, codec, handler))
+        Ok(RpcSession::open(transport, codec, handler, state))
     }
 }
 
 pub mod server {
     use crate::codec::Codec;
-    use crate::session::{RpcSession, RpcSessionHandler};
+    use crate::session::{RpcSession, RpcSessionHandler, SessionState};
     use crate::transport::Transport;
     use async_trait::async_trait;
     use ezsockets::{
@@ -220,13 +222,17 @@ pub mod server {
         }
     }
 
-    pub async fn listen<C>(
+    pub async fn listen<C, S, F, Fut>(
         addr: SocketAddr,
         codec: C,
-        handler: Arc<dyn RpcSessionHandler>,
+        handler: Arc<dyn RpcSessionHandler<State = S>>,
+        state_factory: F,
     ) -> anyhow::Result<()>
     where
         C: Codec,
+        S: SessionState,
+        F: Fn() -> Fut + Sync + Send + 'static,
+        Fut: Future<Output = Result<S, String>> + Send + 'static,
     {
         let (tx_accept, mut rx_accept) = unbounded_channel();
 
@@ -238,7 +244,12 @@ pub mod server {
         // run session per accepted client
         tokio::spawn(async move {
             while let Some(transport) = rx_accept.recv().await {
-                RpcSession::open(transport, codec.clone(), handler.clone());
+                RpcSession::open(
+                    transport,
+                    codec.clone(),
+                    handler.clone(),
+                    state_factory().await.unwrap(),
+                );
             }
         });
 
@@ -269,10 +280,11 @@ mod tests {
 
     #[async_trait]
     impl RpcSessionHandler for TestHandler {
-        async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+        type State = ();
+        async fn on_request(&self, s: (), req: Request) -> Result<Value, ErrorBody> {
             match req.method.as_str() {
                 "ping" => Ok(Value::String("pong".to_string())),
-                _ => RpcSessionHandler::on_request(self, req).await,
+                _ => RpcSessionHandler::on_request(self, s, req).await,
             }
         }
     }
@@ -284,12 +296,19 @@ mod tests {
         let handler = Arc::new(TestHandler {});
 
         // server
-        let server = listen(addr, codec.clone(), handler.clone()).await.unwrap();
+        let server = listen(
+            addr,
+            codec.clone(),
+            handler.clone(),
+            || async move { Ok(()) },
+        )
+        .await
+        .unwrap();
 
         // client
         let client_url = Url::parse(format!("ws://{}", addr).as_str()).unwrap();
         let client_config = ClientConfig::new(client_url);
-        let client = connect(client_config, codec, handler.clone())
+        let client = connect(client_config, codec, handler.clone(), ())
             .await
             .unwrap();
 

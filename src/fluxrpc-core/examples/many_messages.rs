@@ -15,27 +15,30 @@ use url::Url;
 async fn start_server(addr: SocketAddr) {
     let codec = JsonCodec::new();
     let mut handler = TypedRpcHandler::new();
-    handler.register_request_handler(
-        "ping",
-        |_: ()| async move { Result::<(), ErrorBody>::Ok(()) },
-    );
-    let _ = websocket_listen(addr, codec.clone(), Arc::new(handler))
-        .await
-        .unwrap();
+    handler.register_request_handler("ping", |_: (), _: ()| async move {
+        Result::<(), ErrorBody>::Ok(())
+    });
+    let _ = websocket_listen(
+        addr,
+        codec.clone(),
+        Arc::new(handler),
+        || async move { Ok(()) },
+    )
+    .await
+    .unwrap();
 }
 
 async fn start_client(
     addr: SocketAddr,
-) -> anyhow::Result<Arc<RpcSession<JsonCodec, WebsocketClientTransport>>> {
+) -> anyhow::Result<Arc<RpcSession<JsonCodec, WebsocketClientTransport, ()>>> {
     let codec = JsonCodec::new();
     let mut handler = TypedRpcHandler::new();
-    handler.register_request_handler(
-        "ping",
-        |_: ()| async move { Result::<(), ErrorBody>::Ok(()) },
-    );
+    handler.register_request_handler("ping", |_: (), _: ()| async move {
+        Result::<(), ErrorBody>::Ok(())
+    });
     let client_url = Url::parse(format!("ws://{}", addr).as_str())?;
     let client_config = ClientConfig::new(client_url);
-    let client = websocket_connect(client_config, codec, Arc::new(handler)).await?;
+    let client = websocket_connect(client_config, codec, Arc::new(handler), ()).await?;
     Ok(client)
 }
 

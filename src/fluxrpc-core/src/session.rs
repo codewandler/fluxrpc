@@ -13,6 +13,10 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::time;
 use tracing::{debug, error};
 
+pub trait SessionState: Clone + Send + Sync + 'static {}
+
+impl SessionState for () {}
+
 #[derive(Debug)]
 pub enum RpcSessionError {
     Transport(anyhow::Error),
@@ -48,43 +52,53 @@ impl Into<ErrorBody> for HandlerError {
 
 #[async_trait]
 pub trait RpcSessionHandler: Send + Sync + 'static {
+    type State: SessionState;
     async fn on_open(&self) {}
     async fn on_close(&self) {}
-    async fn on_event(&self, evt: Event) {}
-    async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+    async fn on_event(&self, s: Self::State, evt: Event) {}
+    async fn on_request(&self, s: Self::State, req: Request) -> Result<Value, ErrorBody> {
         Err(HandlerError::Unimplemented { method: req.method }.into())
     }
 }
 
-pub struct RpcSession<C, T>
+pub struct RpcSession<C, T, S>
 where
     C: Codec,
     T: Transport,
+    S: SessionState,
 {
     transport: Arc<T>,
     codec: C,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>,
-    handler: Arc<dyn RpcSessionHandler>,
+    handler: Arc<dyn RpcSessionHandler<State = S>>,
+    _foo: std::marker::PhantomData<S>,
 }
 
-impl<C, T> RpcSession<C, T>
+impl<C, T, S> RpcSession<C, T, S>
 where
     T: Transport,
     C: Codec,
+    S: SessionState,
 {
-    pub fn open(transport: T, codec: C, handler: Arc<dyn RpcSessionHandler>) -> Arc<Self> {
+    pub fn open(
+        transport: T,
+        codec: C,
+        handler: Arc<dyn RpcSessionHandler<State = S>>,
+        state: S,
+    ) -> Arc<Self> {
         let session = Arc::new(Self {
             codec,
             transport: Arc::new(transport),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             handler,
+            _foo: std::marker::PhantomData,
         });
 
         let session_run = session.clone();
         tokio::spawn(async move {
             session_run.handler.on_open().await;
 
-            session_run.run().await;
+            session_run.run(state).await;
         });
 
         session
@@ -144,13 +158,15 @@ where
         }
     }
 
-    async fn run(&self) {
+    async fn run(&self, state: S) {
         let pending = self.pending_requests.clone();
         let codec = self.codec.clone();
         let handler = self.handler.clone();
         let transport = self.transport.clone();
+
         tokio::spawn(async move {
             let transport = transport.clone();
+            let state = state.clone();
             loop {
                 let data = match transport.receive().await {
                     Ok(d) => d,
@@ -175,19 +191,20 @@ where
                             error!("received response for unknown request: {{res.id()}}");
                         }
                     },
-                    Message::Event(evt) => handler.on_event(evt.clone()).await,
+                    Message::Event(evt) => handler.on_event(state.clone(), evt.clone()).await,
                     Message::Request(req) => {
                         let request_id = req.id.clone();
-                        let res: Response = match handler.on_request(req.clone()).await {
-                            Ok(v) => Response::Ok(RequestResult {
-                                id: request_id,
-                                result: v,
-                            }),
-                            Err(err) => Response::Error(RequestError {
-                                id: request_id,
-                                error: err.into(),
-                            }),
-                        };
+                        let res: Response =
+                            match handler.on_request(state.clone(), req.clone()).await {
+                                Ok(v) => Response::Ok(RequestResult {
+                                    id: request_id,
+                                    result: v,
+                                }),
+                                Err(err) => Response::Error(RequestError {
+                                    id: request_id,
+                                    error: err.into(),
+                                }),
+                            };
                         let msg = Message::Response(res);
                         let data = codec.encode(&msg).expect("failed to encode response");
                         transport
@@ -215,7 +232,8 @@ mod tests {
 
     #[async_trait]
     impl RpcSessionHandler for MyHandler {
-        async fn on_request(&self, req: Request) -> Result<Value, ErrorBody> {
+        type State = ();
+        async fn on_request(&self, _: Self::State, req: Request) -> Result<Value, ErrorBody> {
             assert_eq!(req.method, "ping");
             Ok(json!("pong"))
         }
@@ -225,8 +243,8 @@ mod tests {
     async fn test_request_response() {
         let handler = Arc::new(MyHandler);
         let (a, b) = channel_transport_pair(10);
-        let session_a = RpcSession::open(a, JsonCodec::new(), handler.clone());
-        let session_b = RpcSession::open(b, JsonCodec::new(), handler.clone());
+        let session_a = RpcSession::open(a, JsonCodec::new(), handler.clone(), ());
+        let session_b = RpcSession::open(b, JsonCodec::new(), handler.clone(), ());
 
         let req = Request::new("ping", None);
 

@@ -33,6 +33,11 @@ An event is defined by `event` and `data` property.
         "message": "data can be any payload"
     }
 }
+
+{
+    "event": "audio_buffer_append",
+    "data": "aslkjdlakjdlaksjd"
+}
 ```
 
 **Request**
