@@ -1,8 +1,8 @@
 use ezsockets::ClientConfig;
 use fluxrpc_core::codec::json::JsonCodec;
 use fluxrpc_core::{
-    ErrorBody, Request, RpcSession, TypedRpcHandler, WebsocketClientTransport, websocket_connect,
-    websocket_listen,
+    ErrorBody, Request, RpcSession, SessionState, TypedRpcHandler, WebsocketClientTransport,
+    websocket_connect, websocket_listen,
 };
 use futures::future::join_all;
 use nanoid::nanoid;
@@ -12,23 +12,29 @@ use std::time::Duration;
 use tokio::time::Instant;
 use url::Url;
 
+struct MyState {
+    pub counter: u64,
+}
+
+impl SessionState for MyState {}
+
 async fn start_server(addr: SocketAddr) {
     let codec = JsonCodec::new();
-    let mut handler = TypedRpcHandler::new();
+    let mut handler = TypedRpcHandler::<MyState>::new();
     handler.with_open_handler(|s, _| async move {
         println!("OPENED");
         Ok(())
     });
-    handler.register_request_handler(
-        "ping",
-        |s, _: ()| async move { Result::<(), ErrorBody>::Ok(()) },
-    );
-    let _ = websocket_listen(
-        addr,
-        codec.clone(),
-        Arc::new(handler),
-        || async move { Ok(()) },
-    )
+    handler.register_request_handler("ping", |s, _: ()| async move {
+        let mut s = s.state().lock().await;
+        s.counter += 1;
+        println!("{} requests", s.counter);
+        Result::<(), ErrorBody>::Ok(())
+    });
+
+    let _ = websocket_listen(addr, codec.clone(), Arc::new(handler), || async move {
+        Ok(MyState { counter: 0 })
+    })
     .await
     .unwrap();
 }
@@ -60,7 +66,7 @@ pub async fn main() -> anyhow::Result<()> {
     // 2. start client
     let client = start_client(addr).await?;
 
-    let n = 55000;
+    let n = 5000;
     let start_at = Instant::now();
 
     let futures = (0..n)

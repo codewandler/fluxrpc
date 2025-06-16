@@ -53,7 +53,7 @@ impl Into<ErrorBody> for HandlerError {
 pub trait SessionHandle: Sync + Send {
     type State: SessionState;
 
-    fn state(&self) -> &Self::State;
+    fn state(&self) -> &Mutex<Self::State>;
 }
 
 #[async_trait]
@@ -95,7 +95,7 @@ where
     T: Transport,
     S: SessionState,
 {
-    state: S,
+    state: Arc<Mutex<S>>,
     transport: Arc<T>,
     codec: C,
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>,
@@ -120,7 +120,7 @@ where
             transport: Arc::new(transport),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             handler,
-            state,
+            state: Arc::new(Mutex::new(state)),
             _foo: std::marker::PhantomData,
         });
 
@@ -282,8 +282,8 @@ where
 {
     type State = S;
 
-    fn state(&self) -> &Self::State {
-        &self.state
+    fn state(&self) -> &Mutex<Self::State> {
+        self.state.as_ref()
     }
 }
 
