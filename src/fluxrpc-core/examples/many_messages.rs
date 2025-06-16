@@ -15,6 +15,10 @@ use url::Url;
 async fn start_server(addr: SocketAddr) {
     let codec = JsonCodec::new();
     let mut handler = TypedRpcHandler::new();
+    handler.with_open_handler(|s, _| async move {
+        println!("OPENED");
+        Ok(())
+    });
     handler.register_request_handler("ping", |_: (), _: ()| async move {
         Result::<(), ErrorBody>::Ok(())
     });
