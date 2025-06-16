@@ -50,10 +50,18 @@ impl Into<ErrorBody> for HandlerError {
     }
 }
 
+#[async_trait]
 pub trait SessionHandle: Sync + Send {
     type State: SessionState;
 
     fn state(&self) -> &Mutex<Self::State>;
+
+    async fn notify(&self, event: &Event) -> anyhow::Result<()>;
+    async fn request(
+        &self,
+        request: &Request,
+        timeout: Option<Duration>,
+    ) -> Result<RequestResult, RpcSessionError>;
 }
 
 #[async_trait]
@@ -274,6 +282,7 @@ where
     }
 }
 
+#[async_trait]
 impl<C, T, S> SessionHandle for RpcSession<C, T, S>
 where
     C: Codec,
@@ -284,6 +293,18 @@ where
 
     fn state(&self) -> &Mutex<Self::State> {
         self.state.as_ref()
+    }
+
+    async fn notify(&self, event: &Event) -> anyhow::Result<()> {
+        self.notify(event).await
+    }
+
+    async fn request(
+        &self,
+        request: &Request,
+        timeout: Option<Duration>,
+    ) -> Result<RequestResult, RpcSessionError> {
+        self.request(request, timeout).await
     }
 }
 
