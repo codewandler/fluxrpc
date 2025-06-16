@@ -1,7 +1,7 @@
 pub mod client {
     use crate::codec::Codec;
     use crate::session::{RpcSession, RpcSessionHandler, SessionState};
-    use crate::transport::Transport;
+    use crate::transport::{Transport, TransportMessage};
     use async_trait::async_trait;
     use ezsockets::{Bytes, Client, Error, Utf8Bytes};
     use std::sync::Arc;
@@ -9,12 +9,12 @@ pub mod client {
     use tokio::sync::{Mutex, oneshot};
 
     pub struct ClientHandler {
-        tx: UnboundedSender<Vec<u8>>,
+        tx: UnboundedSender<TransportMessage>,
         on_connected: Option<oneshot::Sender<()>>,
     }
 
     pub struct ClientTransport {
-        rx: Mutex<UnboundedReceiver<Vec<u8>>>,
+        rx: Mutex<UnboundedReceiver<TransportMessage>>,
         handle: Client<ClientHandler>,
     }
 
@@ -23,12 +23,15 @@ pub mod client {
         type Call = ();
 
         async fn on_text(&mut self, text: Utf8Bytes) -> Result<(), Error> {
-            self.tx.send(text.as_bytes().into())?;
+            self.tx
+                .send(TransportMessage::Text(text.as_bytes().into()))?;
             Ok(())
         }
 
         async fn on_binary(&mut self, bytes: Bytes) -> Result<(), Error> {
-            todo!()
+            self.tx
+                .send(TransportMessage::Binary(bytes.to_vec().into()))?;
+            Ok(())
         }
 
         async fn on_call(&mut self, call: Self::Call) -> Result<(), Error> {
@@ -45,12 +48,17 @@ pub mod client {
 
     #[async_trait]
     impl Transport for ClientTransport {
-        async fn send(&self, data: &[u8]) -> anyhow::Result<()> {
-            let _ = self.handle.text(Utf8Bytes::try_from(data.to_vec())?)?;
+        async fn send(&self, data: &TransportMessage) -> anyhow::Result<()> {
+            let _ = match data {
+                TransportMessage::Text(data) => {
+                    self.handle.text(Utf8Bytes::try_from(data.clone())?)?
+                }
+                TransportMessage::Binary(data) => self.handle.binary(Bytes::from(data.clone()))?,
+            };
             Ok(())
         }
 
-        async fn receive(&self) -> anyhow::Result<Vec<u8>> {
+        async fn receive(&self) -> anyhow::Result<TransportMessage> {
             let mut rx = self.rx.lock().await;
             rx.recv().await.ok_or(anyhow::anyhow!("socket closed"))
         }
@@ -101,7 +109,7 @@ pub mod client {
 pub mod server {
     use crate::codec::Codec;
     use crate::session::{RpcSession, RpcSessionHandler, SessionState};
-    use crate::transport::Transport;
+    use crate::transport::{Transport, TransportMessage};
     use async_trait::async_trait;
     use ezsockets::{
         Bytes, CloseFrame, Error, Request, Server, ServerExt, SessionExt, Socket, Utf8Bytes,
@@ -120,8 +128,8 @@ pub mod server {
 
     struct ServerSession {
         id: SessionID,
-        tx: UnboundedSender<Vec<u8>>,
-        rx: Option<UnboundedReceiver<Vec<u8>>>,
+        tx: UnboundedSender<TransportMessage>,
+        rx: Option<UnboundedReceiver<TransportMessage>>,
         tx_accept: UnboundedSender<ServerSessionTransport>,
         handle: Session,
     }
@@ -136,12 +144,15 @@ pub mod server {
         }
 
         async fn on_text(&mut self, text: Utf8Bytes) -> Result<(), Error> {
-            self.tx.send(text.as_bytes().into())?;
+            self.tx
+                .send(TransportMessage::Text(text.as_bytes().into()))?;
             Ok(())
         }
 
         async fn on_binary(&mut self, bytes: Bytes) -> Result<(), Error> {
-            todo!()
+            self.tx
+                .send(TransportMessage::Binary(bytes.to_vec().into()))?;
+            Ok(())
         }
 
         async fn on_call(&mut self, call: Self::Call) -> Result<(), Error> {
@@ -206,17 +217,22 @@ pub mod server {
 
     pub struct ServerSessionTransport {
         handle: Session,
-        rx: Mutex<UnboundedReceiver<Vec<u8>>>,
+        rx: Mutex<UnboundedReceiver<TransportMessage>>,
     }
 
     #[async_trait]
     impl Transport for ServerSessionTransport {
-        async fn send(&self, data: &[u8]) -> anyhow::Result<()> {
-            let _ = self.handle.text(Utf8Bytes::try_from(data.to_vec())?)?;
+        async fn send(&self, data: &TransportMessage) -> anyhow::Result<()> {
+            let _ = match data {
+                TransportMessage::Text(data) => {
+                    self.handle.text(Utf8Bytes::try_from(data.to_vec())?)?
+                }
+                TransportMessage::Binary(data) => self.handle.binary(Bytes::from(data.clone()))?,
+            };
             Ok(())
         }
 
-        async fn receive(&self) -> anyhow::Result<Vec<u8>> {
+        async fn receive(&self) -> anyhow::Result<TransportMessage> {
             let mut rx = self.rx.lock().await;
             rx.recv().await.ok_or(anyhow::anyhow!("socket closed"))
         }

@@ -2,7 +2,7 @@ use crate::codec::Codec;
 use crate::message::{
     ErrorBody, Event, Message, Request, RequestError, RequestResult, Response, StandardErrorCode,
 };
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportMessage};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -53,9 +53,15 @@ impl Into<ErrorBody> for HandlerError {
 #[async_trait]
 pub trait RpcSessionHandler: Send + Sync + 'static {
     type State: SessionState;
-    async fn on_open(&self) {}
-    async fn on_close(&self) {}
-    async fn on_event(&self, s: Self::State, evt: Event) {}
+
+    async fn on_open(&self, s: Self::State) {}
+    async fn on_close(&self, s: Self::State) {}
+    async fn on_data(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn on_event(&self, s: Self::State, evt: Event) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn on_request(&self, s: Self::State, req: Request) -> Result<Value, ErrorBody> {
         Err(HandlerError::Unimplemented { method: req.method }.into())
     }
@@ -96,9 +102,9 @@ where
 
         let session_run = session.clone();
         tokio::spawn(async move {
-            session_run.handler.on_open().await;
+            session_run.handler.on_open(state.clone()).await;
 
-            session_run.run(state).await;
+            session_run.run(state.clone()).await;
         });
 
         session
@@ -107,7 +113,7 @@ where
     pub async fn notify(&self, event: &Event) -> anyhow::Result<()> {
         let msg = Message::Event(event.clone());
         let data = self.codec.encode(&msg)?;
-        self.transport.send(&data).await
+        self.transport.send(&TransportMessage::Text(data)).await
     }
 
     pub async fn request(
@@ -131,7 +137,7 @@ where
         }
 
         self.transport
-            .send(&data)
+            .send(&TransportMessage::Text(data))
             .await
             .map_err(RpcSessionError::Transport)?;
 
@@ -176,45 +182,57 @@ where
                     }
                 };
 
-                let msg: Message = match codec.decode(&data) {
-                    Ok(m) => m,
-                    Err(err) => {
-                        error!("Decode error: {err}");
-                        continue;
-                    }
-                };
-
-                match &msg {
-                    Message::Response(res) => match pending.lock().await.remove(res.id()) {
-                        Some(tx) => tx.send(res.clone()).expect("failed to send response"),
-                        None => {
-                            error!("received response for unknown request: {{res.id()}}");
+                match data {
+                    TransportMessage::Binary(data) => {
+                        if let Err(err) = handler.on_data(state.clone(), data).await {
+                            error!("Data handler error: {err}");
                         }
-                    },
-                    Message::Event(evt) => handler.on_event(state.clone(), evt.clone()).await,
-                    Message::Request(req) => {
-                        let request_id = req.id.clone();
-                        let res: Response =
-                            match handler.on_request(state.clone(), req.clone()).await {
-                                Ok(v) => Response::Ok(RequestResult {
-                                    id: request_id,
-                                    result: v,
-                                }),
-                                Err(err) => Response::Error(RequestError {
-                                    id: request_id,
-                                    error: err.into(),
-                                }),
-                            };
-                        let msg = Message::Response(res);
-                        let data = codec.encode(&msg).expect("failed to encode response");
-                        transport
-                            .send(&data)
-                            .await
-                            .expect("failed to send response");
+                    }
+                    TransportMessage::Text(data) => {
+                        let msg: Message = match codec.decode(&data) {
+                            Ok(m) => m,
+                            Err(err) => {
+                                error!("Decode error: {err}");
+                                continue;
+                            }
+                        };
+
+                        match &msg {
+                            Message::Response(res) => match pending.lock().await.remove(res.id()) {
+                                Some(tx) => tx.send(res.clone()).expect("failed to send response"),
+                                None => {
+                                    error!("received response for unknown request: {{res.id()}}");
+                                }
+                            },
+                            Message::Event(evt) => {
+                                match handler.on_event(state.clone(), evt.clone()).await {
+                                    Err(err) => error!("Event handler error: {err}"),
+                                    Ok(()) => {}
+                                }
+                            }
+                            Message::Request(req) => {
+                                let request_id = req.id.clone();
+                                let res: Response =
+                                    match handler.on_request(state.clone(), req.clone()).await {
+                                        Ok(v) => Response::Ok(RequestResult {
+                                            id: request_id,
+                                            result: v,
+                                        }),
+                                        Err(err) => Response::Error(RequestError {
+                                            id: request_id,
+                                            error: err.into(),
+                                        }),
+                                    };
+                                let msg = Message::Response(res);
+                                let data = codec.encode(&msg).expect("failed to encode response");
+                                transport
+                                    .send(&TransportMessage::Text(data))
+                                    .await
+                                    .expect("failed to send response");
+                            }
+                        }
                     }
                 }
-
-                // TODO: Handle requests and events here if needed
             }
         });
     }

@@ -145,8 +145,8 @@ impl fmt::Display for StandardErrorCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
-    event: String,
-    data: Option<Value>,
+    pub event: String,
+    pub data: Option<Value>,
 }
 
 impl Event {

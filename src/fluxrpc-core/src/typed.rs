@@ -1,13 +1,15 @@
+use crate::Event;
 use crate::message::{ErrorBody, Request};
-use crate::schema;
 use crate::session::{HandlerError, RpcSessionHandler, SessionState};
 use async_trait::async_trait;
-use schemars::{Schema, json_schema, schema_for};
+use schemars::Schema;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use tracing::trace;
 
 #[derive(Debug, Serialize)]
 struct MethodSchema {
@@ -26,8 +28,20 @@ struct EventSchema {
 trait TypedRpcMethod: Send + Sync {
     type State: SessionState;
 
-    fn schema(&self) -> MethodSchema;
+    //fn schema(&self) -> MethodSchema;
     async fn call(&self, s: Self::State, params: Value) -> Result<Value, ErrorBody>;
+}
+
+#[async_trait]
+trait TypedRpcDispatch: Send + Sync {
+    type State: SessionState;
+    async fn call(&self, s: Self::State, params: Value) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+trait TypedDataDispatch: Send + Sync {
+    type State: SessionState;
+    async fn call(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()>;
 }
 
 pub struct TypedRpcHandler<S>
@@ -35,7 +49,9 @@ where
     S: SessionState,
 {
     request_handlers: HashMap<String, Arc<dyn TypedRpcMethod<State = S>>>,
-    events: HashMap<String, EventSchema>,
+    event_handlers: HashMap<String, Arc<dyn TypedRpcDispatch<State = S>>>,
+    data_handler: Option<Arc<dyn TypedDataDispatch<State = S>>>,
+    //events: HashMap<String, EventSchema>,
     _state: PhantomData<S>,
 }
 
@@ -46,26 +62,39 @@ where
     pub fn new() -> Self {
         Self {
             request_handlers: HashMap::new(),
-            events: HashMap::new(),
+            event_handlers: HashMap::new(),
+            data_handler: None,
+            //events: HashMap::new(),
             _state: PhantomData,
         }
     }
 
     pub fn register_event_handler<E, F, Fut>(&mut self, name: &str, f: F)
     where
-        E: schemars::JsonSchema + 'static,
+        E: Serialize + DeserializeOwned + Send + Sync + schemars::JsonSchema + 'static,
         F: Fn(S, E) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
     {
-        let schema = schema_for!(E);
-        // TODO: store F
-        self.events.insert(
-            name.to_string(),
-            EventSchema {
-                name: name.to_string(),
-                schema,
-            },
-        );
+        let handler = Arc::new(TypedEventHandler::<E, F, S> {
+            event: name.to_string(),
+            f: Arc::new(f),
+            _phantom: Default::default(),
+        });
+
+        self.event_handlers.insert(name.to_string(), handler);
+    }
+
+    pub fn register_data_handler<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(S, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
+    {
+        let handler = Arc::new(TypedDataHandler::<F, S> {
+            f: Arc::new(f),
+            _phantom: Default::default(),
+        });
+
+        self.data_handler.replace(handler);
     }
 
     pub fn register_request_handler<Req, Res, Err, F, Fut>(&mut self, method: &str, f: F)
@@ -84,7 +113,7 @@ where
         self.request_handlers.insert(method.to_string(), handler);
     }
 
-    pub fn schema(&self) -> schema::Schema {
+    /*pub fn schema(&self) -> schema::Schema {
         let events: HashMap<_, _> = HashMap::from_iter(self.events.iter().map(|(k, v)| {
             (
                 k.to_string(),
@@ -127,13 +156,59 @@ where
             }
         }))
         .unwrap()
-    }
+    }*/
 }
 
 struct TypedRequestHandler<Req, Res, Err, F, S> {
     method: String,
     f: Arc<F>,
     _phantom: PhantomData<(Req, Res, Err, S)>,
+}
+
+struct TypedEventHandler<E, F, S> {
+    event: String,
+    f: Arc<F>,
+    _phantom: PhantomData<(E, S)>,
+}
+
+struct TypedDataHandler<F, S> {
+    f: Arc<F>,
+    _phantom: PhantomData<S>,
+}
+
+#[async_trait]
+impl<F, S, Fut> TypedDataDispatch for TypedDataHandler<F, S>
+where
+    F: Fn(S, Vec<u8>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    S: SessionState,
+{
+    type State = S;
+
+    async fn call(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()> {
+        _ = (self.f)(s, data).await;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<E, F, S, Fut> TypedRpcDispatch for TypedEventHandler<E, F, S>
+where
+    E: serde::de::DeserializeOwned + schemars::JsonSchema + Sync + Send + 'static,
+    F: Fn(S, E) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    S: SessionState,
+{
+    type State = S;
+
+    async fn call(&self, s: Self::State, params: Value) -> anyhow::Result<()> {
+        let input: E = serde_json::from_value(params)?;
+
+        _ = (self.f)(s, input).await;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -148,13 +223,13 @@ where
 {
     type State = S;
 
-    fn schema(&self) -> MethodSchema {
+    /*fn schema(&self) -> MethodSchema {
         MethodSchema {
             method: self.method.clone(),
             params: schema_for!(Req),
             result: schema_for!(Res),
         }
-    }
+    }*/
 
     async fn call(&self, s: S, params: Value) -> Result<Value, ErrorBody> {
         let input: Req = serde_json::from_value(params)
@@ -177,9 +252,28 @@ where
 {
     type State = S;
 
+    async fn on_data(&self, s: Self::State, data: Vec<u8>) -> anyhow::Result<()> {
+        if let Some(handler) = &self.data_handler {
+            handler.call(s, data).await?;
+        }
+        Ok(())
+    }
+
+    // TODO: event handler
+    // TODO: data handler
+
+    async fn on_event(&self, s: Self::State, evt: Event) -> anyhow::Result<()> {
+        match self.event_handlers.get(&evt.event) {
+            Some(handler) => handler.call(s, evt.data.unwrap_or(Value::Null)).await,
+            None => {
+                trace!("Unhandled event: {:?}", evt);
+                Ok(())
+            }
+        }
+    }
+
     async fn on_request(&self, s: S, req: Request) -> Result<Value, ErrorBody> {
-        let method = self.request_handlers.get(&req.method);
-        match method {
+        match self.request_handlers.get(&req.method) {
             Some(handler) => handler.call(s, req.params.unwrap_or(Value::Null)).await,
             None => Err(HandlerError::Unimplemented { method: req.method }.into()),
         }
@@ -230,6 +324,11 @@ mod tests {
             Ok(())
         });
 
+        registry.register_data_handler(|_: (), data| async move {
+            println!("Data: {:?}", data);
+            Ok(())
+        });
+
         // 1. handle request
         let req = Request::new("test", Value::from(1.0).into());
         let res = registry.on_request((), req).await.unwrap();
@@ -249,11 +348,15 @@ mod tests {
                     .into(),
                 ),
             )
-            .await;
+            .await
+            .expect("TODO: panic message");
 
-        println!(
+        // 3. data
+        registry.on_data((), Vec::new()).await.expect("failed")
+
+        /*println!(
             "{}",
             serde_json::to_string_pretty(&registry.schema()).unwrap()
-        );
+        );*/
     }
 }
