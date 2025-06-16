@@ -326,7 +326,7 @@ mod tests {
             Ok(())
         });
 
-        let (s1, s2) = new_channel_sessions(JsonCodec::new(), Arc::new(registry), ());
+        let (s1, s2) = new_channel_sessions(JsonCodec::new(), Arc::new(registry), (), ());
 
         s1.notify(&Event::new(
             "my_event",

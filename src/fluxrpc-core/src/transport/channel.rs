@@ -50,7 +50,8 @@ pub fn channel_transport_pair(capacity: usize) -> (ChannelTransport, ChannelTran
 pub fn new_channel_sessions<C, S>(
     c: C,
     h: Arc<dyn RpcSessionHandler<State = S>>,
-    s: S,
+    s1: S,
+    s2: S,
 ) -> (
     Arc<RpcSession<C, ChannelTransport, S>>,
     Arc<RpcSession<C, ChannelTransport, S>>,
@@ -60,8 +61,8 @@ where
     S: SessionState,
 {
     let (t1, t2) = channel_transport_pair(10);
-    let s1 = RpcSession::create(t1, c.clone(), h.clone(), s.clone());
-    let s2 = RpcSession::create(t2, c, h.clone(), s.clone());
+    let s1 = RpcSession::create(t1, c.clone(), h.clone(), s1);
+    let s2 = RpcSession::create(t2, c, h.clone(), s2);
     (s1, s2)
 }
 

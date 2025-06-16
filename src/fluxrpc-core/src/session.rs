@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::time;
 use tracing::{debug, error};
 
-pub trait SessionState: Clone + Send + Sync + 'static {}
+pub trait SessionState: Send + Sync + 'static {}
 
 impl SessionState for () {}
 
@@ -53,7 +53,7 @@ impl Into<ErrorBody> for HandlerError {
 pub trait SessionHandle: Sync + Send {
     type State: SessionState;
 
-    fn state(&self) -> Self::State;
+    fn state(&self) -> &Self::State;
 }
 
 #[async_trait]
@@ -198,7 +198,7 @@ where
         let codec = self.codec.clone();
         let handler = self.handler.clone();
         let transport = self.transport.clone();
-        let state = self.state.clone();
+        //let state = self.state.clone();
         let handle: Arc<dyn SessionHandle<State = S>> = self.clone();
 
         self.handler
@@ -208,7 +208,7 @@ where
 
         tokio::spawn(async move {
             let transport = transport.clone();
-            let state = state.clone();
+            //let state = state.clone();
             loop {
                 let data = match transport.receive().await {
                     Ok(d) => d,
@@ -282,8 +282,8 @@ where
 {
     type State = S;
 
-    fn state(&self) -> Self::State {
-        self.state.clone()
+    fn state(&self) -> &Self::State {
+        &self.state
     }
 }
 
