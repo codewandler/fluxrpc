@@ -4,6 +4,7 @@ version: '3'
 
 tasks:
   release:
+    dir: src/fluxrpc-core
     cmds:
       - cargo test
       - cargo fix --allow-dirty
