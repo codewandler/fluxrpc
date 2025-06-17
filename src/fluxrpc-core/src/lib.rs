@@ -11,5 +11,5 @@ pub use transport::websocket::{
 };
 
 pub use message::*;
-pub use session::{RpcSession, RpcSessionError, SessionState};
+pub use session::{RpcSession, RpcSessionError, SessionContext, SessionState};
 pub use typed::TypedRpcHandler;

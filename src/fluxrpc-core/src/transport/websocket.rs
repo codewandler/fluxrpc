@@ -120,13 +120,14 @@ pub mod server {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-    use tracing::debug;
+    use tracing::{debug, info};
 
     type SessionID = u16;
     type Session = ezsockets::Session<SessionID, ()>;
 
     struct ServerHandler {
         tx_accept: UnboundedSender<ServerSessionTransport>,
+        bearer_token: Option<String>,
     }
 
     struct ServerSession {
@@ -181,6 +182,12 @@ pub mod server {
             request: Request,
             address: SocketAddr,
         ) -> Result<Session, Option<CloseFrame>> {
+            info!(
+                "session connect uri={} port={}",
+                request.uri(),
+                address.port()
+            );
+
             // TODO: validate socket
             // TODO: validate request
             // TODO: auth
@@ -257,7 +264,10 @@ pub mod server {
         let (tx_accept, mut rx_accept) = unbounded_channel();
 
         tokio::spawn(async move {
-            let (server, _) = Server::create(|_server| ServerHandler { tx_accept });
+            let (server, _) = Server::create(|_server| ServerHandler {
+                tx_accept,
+                bearer_token: None,
+            });
             ezsockets::tungstenite::run(server, addr).await.unwrap();
         });
 
