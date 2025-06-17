@@ -6,8 +6,8 @@ mod transport;
 mod typed;
 
 pub use transport::websocket::{
-    client::ClientTransport as WebsocketClientTransport, client::connect as websocket_connect,
-    server::listen as websocket_listen,
+    client::ClientTransport as WebsocketClientTransport, client::WebsocketClientConfig,
+    client::connect as websocket_connect, server::listen as websocket_listen,
 };
 
 pub use message::*;

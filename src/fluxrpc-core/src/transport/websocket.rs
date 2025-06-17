@@ -8,6 +8,8 @@ pub mod client {
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
     use tokio::sync::{Mutex, oneshot};
 
+    pub use ezsockets::ClientConfig as WebsocketClientConfig;
+
     pub struct ClientHandler {
         tx: UnboundedSender<TransportMessage>,
         on_connected: Option<oneshot::Sender<()>>,
