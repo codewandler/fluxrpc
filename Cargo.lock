@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "fluxrpc-core"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "anyhow",
  "async-trait",
