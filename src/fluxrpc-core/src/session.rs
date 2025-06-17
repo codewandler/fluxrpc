@@ -56,6 +56,7 @@ pub trait SessionContext: Sync + Send {
 
     fn state(&self) -> &Self::State;
 
+    async fn send_binary(&self, data: Vec<u8>) -> anyhow::Result<()>;
     async fn notify(&self, event: &Event) -> anyhow::Result<()>;
     async fn request(
         &self,
@@ -154,6 +155,10 @@ where
         let msg = Message::Event(event.clone());
         let data = self.codec.encode(&msg)?;
         self.transport.send(&TransportMessage::Text(data)).await
+    }
+
+    pub async fn send_binary(&self, data: Vec<u8>) -> anyhow::Result<()> {
+        self.transport.send(&TransportMessage::Binary(data)).await
     }
 
     pub async fn request(
@@ -312,6 +317,10 @@ where
 
     fn state(&self) -> &Self::State {
         self.state.as_ref()
+    }
+
+    async fn send_binary(&self, data: Vec<u8>) -> anyhow::Result<()> {
+        self.send_binary(data).await
     }
 
     async fn notify(&self, event: &Event) -> anyhow::Result<()> {
