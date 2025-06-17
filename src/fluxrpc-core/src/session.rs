@@ -287,6 +287,8 @@ where
 
             async move {
                 while let Some(msg) = rx.recv().await {
+                    debug!("Received message: {:?}", msg);
+
                     let codec = codec.clone();
                     let handler = handler.clone();
                     let ctx = ctx.clone();
