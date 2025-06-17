@@ -4,12 +4,12 @@ use crate::message::{
 };
 use crate::transport::{Transport, TransportMessage};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tracing::{debug, error};
 
@@ -51,10 +51,10 @@ impl Into<ErrorBody> for HandlerError {
 }
 
 #[async_trait]
-pub trait SessionHandle: Sync + Send {
+pub trait SessionContext: Sync + Send {
     type State: SessionState;
 
-    fn state(&self) -> &Mutex<Self::State>;
+    fn state(&self) -> &Self::State;
 
     async fn notify(&self, event: &Event) -> anyhow::Result<()>;
     async fn request(
@@ -68,29 +68,32 @@ pub trait SessionHandle: Sync + Send {
 pub trait RpcSessionHandler: Send + Sync + 'static {
     type State: SessionState;
 
-    async fn on_open(&self, s: Arc<dyn SessionHandle<State = Self::State>>) -> anyhow::Result<()> {
+    async fn on_open(&self, s: Arc<dyn SessionContext<State = Self::State>>) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn on_close(&self, s: Arc<dyn SessionHandle<State = Self::State>>) -> anyhow::Result<()> {
+    async fn on_close(
+        &self,
+        s: Arc<dyn SessionContext<State = Self::State>>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn on_data(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         data: Vec<u8>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn on_event(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         evt: Event,
     ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn on_request(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         req: Request,
     ) -> Result<Value, ErrorBody> {
         Err(HandlerError::Unimplemented { method: req.method }.into())
@@ -103,10 +106,10 @@ where
     T: Transport,
     S: SessionState,
 {
-    state: Arc<Mutex<S>>,
+    state: Arc<S>,
     transport: Arc<T>,
     codec: C,
-    pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>,
+    pending_requests: Arc<DashMap<String, oneshot::Sender<Response>>>,
     handler: Arc<dyn RpcSessionHandler<State = S>>,
     _foo: std::marker::PhantomData<S>,
 }
@@ -126,9 +129,9 @@ where
         let s = Arc::new(Self {
             codec,
             transport: Arc::new(transport),
-            pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            pending_requests: Arc::new(DashMap::new()),
             handler,
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(state),
             _foo: std::marker::PhantomData,
         });
 
@@ -170,7 +173,7 @@ where
         let (tx, rx) = oneshot::channel();
         let id = request.id.clone();
         {
-            self.pending_requests.lock().await.insert(id.clone(), tx);
+            self.pending_requests.insert(id.clone(), tx);
         }
 
         self.transport
@@ -201,81 +204,97 @@ where
         }
     }
 
+    async fn handle_msg(
+        codec: C,
+        handler: Arc<dyn RpcSessionHandler<State = S>>,
+        handle: Arc<dyn SessionContext<State = S>>,
+        transport: Arc<T>,
+        pending: Arc<DashMap<String, oneshot::Sender<Response>>>,
+        msg: TransportMessage,
+    ) -> anyhow::Result<()> {
+        match msg {
+            TransportMessage::Binary(data) => handler.on_data(handle.clone(), data).await,
+            TransportMessage::Text(data) => {
+                let msg: Message = codec.decode(&data)?;
+
+                match &msg {
+                    Message::Response(res) => match pending.remove(res.id()) {
+                        Some((_, tx)) => {
+                            tx.send(res.clone())
+                                .map_err(|_| anyhow::Error::msg("failed to send response"))?;
+                            Ok(())
+                        }
+                        None => Err(anyhow::Error::msg("received response for unknown request"))?,
+                    },
+                    Message::Event(evt) => handler.on_event(handle.clone(), evt.clone()).await,
+                    Message::Request(req) => {
+                        let req = req.clone();
+                        let request_id = req.id.clone();
+                        let res: Response =
+                            match handler.on_request(handle.clone(), req.clone()).await {
+                                Ok(v) => Response::Ok(RequestResult {
+                                    id: request_id,
+                                    result: v,
+                                }),
+                                Err(err) => Response::Error(RequestError {
+                                    id: request_id,
+                                    error: err.into(),
+                                }),
+                            };
+                        let msg = Message::Response(res);
+                        let data = codec.encode(&msg).expect("failed to encode response");
+                        transport.send(&TransportMessage::Text(data)).await.unwrap();
+
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+
     async fn run(self: Arc<Self>) {
-        let pending = self.pending_requests.clone();
-        let codec = self.codec.clone();
-        let handler = self.handler.clone();
-        let transport = self.transport.clone();
-        //let state = self.state.clone();
-        let handle: Arc<dyn SessionHandle<State = S>> = self.clone();
+        let ctx: Arc<dyn SessionContext<State = S>> = self.clone();
 
         self.handler
-            .on_open(handle.clone())
+            .on_open(ctx.clone())
             .await
             .expect("TODO: panic message");
 
-        tokio::spawn(async move {
-            let transport = transport.clone();
-            //let state = state.clone();
-            loop {
-                let data = match transport.receive().await {
-                    Ok(d) => d,
-                    Err(err) => {
-                        error!("Transport receive error: {err}");
+        let (tx, mut rx) = mpsc::channel::<TransportMessage>(100);
+
+        tokio::spawn({
+            let transport = self.transport.clone();
+            async move {
+                while let Ok(msg) = transport.receive().await {
+                    if tx.send(msg).await.is_err() {
                         break;
                     }
-                };
+                }
+            }
+        });
 
-                match data {
-                    TransportMessage::Binary(data) => {
-                        if let Err(err) = handler.on_data(handle.clone(), data).await {
-                            error!("Data handler error: {err}");
-                        }
-                    }
-                    TransportMessage::Text(data) => {
-                        let msg: Message = match codec.decode(&data) {
-                            Ok(m) => m,
-                            Err(err) => {
-                                error!("Decode error: {err}");
-                                continue;
-                            }
-                        };
+        tokio::spawn({
+            let codec = self.codec.clone();
+            let handler = self.handler.clone();
+            let ctx: Arc<dyn SessionContext<State = S>> = self.clone();
+            let transport = self.transport.clone();
+            let pending = self.pending_requests.clone();
 
-                        match &msg {
-                            Message::Response(res) => match pending.lock().await.remove(res.id()) {
-                                Some(tx) => tx.send(res.clone()).expect("failed to send response"),
-                                None => {
-                                    error!("received response for unknown request: {{res.id()}}");
-                                }
-                            },
-                            Message::Event(evt) => {
-                                match handler.on_event(handle.clone(), evt.clone()).await {
-                                    Err(err) => error!("Event handler error: {err}"),
-                                    Ok(()) => {}
-                                }
-                            }
-                            Message::Request(req) => {
-                                let request_id = req.id.clone();
-                                let res: Response =
-                                    match handler.on_request(handle.clone(), req.clone()).await {
-                                        Ok(v) => Response::Ok(RequestResult {
-                                            id: request_id,
-                                            result: v,
-                                        }),
-                                        Err(err) => Response::Error(RequestError {
-                                            id: request_id,
-                                            error: err.into(),
-                                        }),
-                                    };
-                                let msg = Message::Response(res);
-                                let data = codec.encode(&msg).expect("failed to encode response");
-                                transport
-                                    .send(&TransportMessage::Text(data))
-                                    .await
-                                    .expect("failed to send response");
-                            }
+            async move {
+                while let Some(msg) = rx.recv().await {
+                    let codec = codec.clone();
+                    let handler = handler.clone();
+                    let ctx = ctx.clone();
+                    let transport = transport.clone();
+                    let pending = pending.clone();
+
+                    tokio::spawn(async move {
+                        if let Err(err) =
+                            Self::handle_msg(codec, handler, ctx, transport, pending, msg).await
+                        {
+                            error!("Error handling message: {err}");
                         }
-                    }
+                    });
                 }
             }
         });
@@ -283,7 +302,7 @@ where
 }
 
 #[async_trait]
-impl<C, T, S> SessionHandle for RpcSession<C, T, S>
+impl<C, T, S> SessionContext for RpcSession<C, T, S>
 where
     C: Codec,
     T: Transport,
@@ -291,7 +310,7 @@ where
 {
     type State = S;
 
-    fn state(&self) -> &Mutex<Self::State> {
+    fn state(&self) -> &Self::State {
         self.state.as_ref()
     }
 
@@ -323,7 +342,7 @@ mod tests {
         type State = ();
         async fn on_request(
             &self,
-            s: Arc<dyn SessionHandle<State = Self::State>>,
+            s: Arc<dyn SessionContext<State = Self::State>>,
             req: Request,
         ) -> Result<Value, ErrorBody> {
             assert_eq!(req.method, "ping");

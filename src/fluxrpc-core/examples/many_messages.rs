@@ -7,13 +7,27 @@ use fluxrpc_core::{
 use futures::future::join_all;
 use nanoid::nanoid;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::Instant;
 use url::Url;
 
 struct MyState {
-    pub counter: u64,
+    counter: Mutex<u64>,
+}
+
+impl MyState {
+    pub fn new() -> Self {
+        Self {
+            counter: Mutex::new(0),
+        }
+    }
+
+    pub fn inc(&self) -> u64 {
+        let mut counter = self.counter.lock().unwrap();
+        *counter += 1;
+        *counter
+    }
 }
 
 impl SessionState for MyState {}
@@ -25,15 +39,27 @@ async fn start_server(addr: SocketAddr) {
         println!("OPENED");
         Ok(())
     });
-    handler.register_request_handler("ping", |s, _: ()| async move {
-        let mut s = s.state().lock().await;
-        s.counter += 1;
-        println!("{} requests", s.counter);
+    handler.register_request_handler("ping", |ctx, _: ()| async move {
+        let s = ctx.state().inc();
+        println!("{} requests", s);
+
+        // send a new request
+        ctx.request(
+            &Request {
+                id: nanoid!(),
+                method: "ping".to_string(),
+                params: None,
+            },
+            Duration::from_millis(10000).into(),
+        )
+        .await
+        .unwrap();
+
         Result::<(), ErrorBody>::Ok(())
     });
 
     let _ = websocket_listen(addr, codec.clone(), Arc::new(handler), || async move {
-        Ok(MyState { counter: 0 })
+        Ok(MyState::new())
     })
     .await
     .unwrap();

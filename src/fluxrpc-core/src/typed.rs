@@ -1,6 +1,6 @@
 use crate::Event;
 use crate::message::{ErrorBody, Request};
-use crate::session::{HandlerError, RpcSessionHandler, SessionHandle, SessionState};
+use crate::session::{HandlerError, RpcSessionHandler, SessionContext, SessionState};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -16,7 +16,7 @@ trait TypedRpcMethod: Send + Sync {
     type State: SessionState;
     async fn call(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         params: Value,
     ) -> Result<Value, ErrorBody>;
 }
@@ -26,7 +26,7 @@ trait TypedRpcDispatch: Send + Sync {
     type State: SessionState;
     async fn call(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         params: Value,
     ) -> anyhow::Result<()>;
 }
@@ -37,7 +37,7 @@ trait Callable: Send + Sync {
     type Input;
     async fn call(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         data: Self::Input,
     ) -> anyhow::Result<()>;
 }
@@ -71,7 +71,7 @@ where
 
     pub fn with_open_handler<F, Fut>(&mut self, f: F)
     where
-        F: Fn(Arc<dyn SessionHandle<State = S>>, ()) -> Fut + Send + Sync + 'static,
+        F: Fn(Arc<dyn SessionContext<State = S>>, ()) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
     {
         let handler = Arc::new(TypedCallbackHandler::<F, S, ()> {
@@ -85,7 +85,7 @@ where
     pub fn register_event_handler<E, F, Fut>(&mut self, name: &str, f: F)
     where
         E: Serialize + DeserializeOwned + Send + Sync + schemars::JsonSchema + 'static,
-        F: Fn(Arc<dyn SessionHandle<State = S>>, E) -> Fut + Send + Sync + 'static,
+        F: Fn(Arc<dyn SessionContext<State = S>>, E) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
     {
         let handler = Arc::new(TypedEventHandler::<E, F, S> {
@@ -99,7 +99,7 @@ where
 
     pub fn register_data_handler<F, Fut>(&mut self, f: F)
     where
-        F: Fn(Arc<dyn SessionHandle<State = S>>, Vec<u8>) -> Fut + Send + Sync + 'static,
+        F: Fn(Arc<dyn SessionContext<State = S>>, Vec<u8>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), anyhow::Error>> + Send + 'static,
     {
         let handler = Arc::new(TypedCallbackHandler::<F, S, Vec<u8>> {
@@ -115,7 +115,7 @@ where
         Req: DeserializeOwned + JsonSchema + Sync + Send + 'static,
         Res: Serialize + JsonSchema + Sync + Send + 'static,
         Err: Into<ErrorBody> + Sync + Send + 'static,
-        F: Fn(Arc<dyn SessionHandle<State = S>>, Req) -> Fut + Send + Sync + 'static,
+        F: Fn(Arc<dyn SessionContext<State = S>>, Req) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Res, Err>> + Send + 'static,
     {
         let handler = Arc::new(TypedRequestHandler::<Req, Res, Err, F, S> {
@@ -147,7 +147,7 @@ struct TypedCallbackHandler<F, S, I> {
 #[async_trait]
 impl<F, S, I, Fut> Callable for TypedCallbackHandler<F, S, I>
 where
-    F: Fn(Arc<dyn SessionHandle<State = S>>, I) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<dyn SessionContext<State = S>>, I) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     S: SessionState,
     I: Sync + Send + 'static,
@@ -157,7 +157,7 @@ where
 
     async fn call(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         data: I,
     ) -> anyhow::Result<()> {
         _ = (self.f)(s, data).await;
@@ -170,7 +170,7 @@ where
 impl<E, F, S, Fut> TypedRpcDispatch for TypedEventHandler<E, F, S>
 where
     E: DeserializeOwned + JsonSchema + Sync + Send + 'static,
-    F: Fn(Arc<dyn SessionHandle<State = S>>, E) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<dyn SessionContext<State = S>>, E) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     S: SessionState,
 {
@@ -178,7 +178,7 @@ where
 
     async fn call(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         params: Value,
     ) -> anyhow::Result<()> {
         let input: E = serde_json::from_value(params)?;
@@ -195,7 +195,7 @@ where
     Req: DeserializeOwned + JsonSchema + Sync + Send + 'static,
     Res: Serialize + JsonSchema + Sync + Send + 'static,
     Err: Into<ErrorBody> + Sync + Send + 'static,
-    F: Fn(Arc<dyn SessionHandle<State = S>>, Req) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<dyn SessionContext<State = S>>, Req) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Res, Err>> + Send + 'static,
     S: SessionState,
 {
@@ -203,7 +203,7 @@ where
 
     async fn call(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         params: Value,
     ) -> Result<Value, ErrorBody> {
         let input: Req = serde_json::from_value(params)
@@ -226,7 +226,7 @@ where
 {
     type State = S;
 
-    async fn on_open(&self, s: Arc<dyn SessionHandle<State = S>>) -> anyhow::Result<()> {
+    async fn on_open(&self, s: Arc<dyn SessionContext<State = S>>) -> anyhow::Result<()> {
         if let Some(handler) = &self.open_handler {
             handler.call(s, ()).await?;
         }
@@ -235,7 +235,7 @@ where
 
     async fn on_data(
         &self,
-        s: Arc<dyn SessionHandle<State = Self::State>>,
+        s: Arc<dyn SessionContext<State = Self::State>>,
         data: Vec<u8>,
     ) -> anyhow::Result<()> {
         if let Some(handler) = &self.data_handler {
@@ -246,7 +246,7 @@ where
 
     async fn on_event(
         &self,
-        s: Arc<dyn SessionHandle<State = S>>,
+        s: Arc<dyn SessionContext<State = S>>,
         evt: Event,
     ) -> anyhow::Result<()> {
         match self.event_handlers.get(&evt.event) {
@@ -260,7 +260,7 @@ where
 
     async fn on_request(
         &self,
-        s: Arc<dyn SessionHandle<State = S>>,
+        s: Arc<dyn SessionContext<State = S>>,
         req: Request,
     ) -> Result<Value, ErrorBody> {
         match self.request_handlers.get(&req.method) {

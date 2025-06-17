@@ -282,7 +282,7 @@ mod tests {
 
     use crate::codec::json::JsonCodec;
     use crate::message::{ErrorBody, Request};
-    use crate::session::{RpcSessionHandler, SessionHandle};
+    use crate::session::{RpcSessionHandler, SessionContext};
     use crate::transport::websocket::client::connect;
     use crate::transport::websocket::server::listen;
     use async_trait::async_trait;
@@ -301,7 +301,7 @@ mod tests {
         type State = ();
         async fn on_request(
             &self,
-            s: Arc<dyn SessionHandle<State = Self::State>>,
+            s: Arc<dyn SessionContext<State = Self::State>>,
             req: Request,
         ) -> Result<Value, ErrorBody> {
             match req.method.as_str() {
