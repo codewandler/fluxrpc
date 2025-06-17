@@ -250,7 +250,7 @@ pub mod server {
         C: Codec,
         S: SessionState,
         F: Fn() -> Fut + Sync + Send + 'static,
-        Fut: Future<Output = anyhow::Result<S, String>> + Send + 'static,
+        Fut: Future<Output = anyhow::Result<S>> + Send + 'static,
     {
         let (tx_accept, mut rx_accept) = unbounded_channel();
 
