@@ -297,9 +297,10 @@ where
 
                     tokio::spawn(async move {
                         if let Err(err) =
-                            Self::handle_msg(codec, handler, ctx, transport, pending, msg).await
+                            Self::handle_msg(codec, handler, ctx, transport, pending, msg.clone())
+                                .await
                         {
-                            error!("Error handling message: {err}");
+                            error!("Error handling message: {msg:?} {err}");
                         }
                     });
                 }
